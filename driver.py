@@ -4,7 +4,7 @@
 import json
 from flask import Flask, request
 from flask_cors import CORS, cross_origin
-from helpers import detect_unauthorized_objects, detect_face
+from helpers import detect_face, recognize_face
 
 app = Flask(__name__)
 CORS(app, resources={r"*": {"origins": "*"}})
@@ -13,21 +13,32 @@ CORS(app, resources={r"*": {"origins": "*"}})
 def hello_world():
     return 'Hello from Flask!'
 
-@app.route('/detect-unauth-objects', methods=['POST'])
-@cross_origin(origin='http://127.0.0.1:5500/index.html', headers=['Content-Type', 'Authorization'])
-def detect_unauth_objects():
-    request_data = request.get_json()
-    image = request_data['image']
-    violations_response = detect_unauthorized_objects(image)
-    return json.dumps(violations_response)
+# @app.route('/detect-unauth-objects', methods=['POST'])
+# @cross_origin(origin='http://127.0.0.1:5500/index.html', headers=['Content-Type', 'Authorization'])
+# def detect_unauth_objects():
+#     request_data = request.get_json()
+#     image = request_data['image']
+#     violations_response = detect_unauthorized_objects(image)
+#     return json.dumps(violations_response)
 
 @app.route('/detect-faces', methods=['POST'])
 @cross_origin(origin='http://127.0.0.1:5500/index.html', headers=['Content-Type', 'Authorization'])
 def detect_faces_camera():
     request_data = request.get_json()
     image = request_data['image']
-    face_detection_resdict = detect_face(image)
-    return json.dumps(face_detection_resdict)
+    task = request_data['task']
+    response = {}
+
+    if task == "REF_IMAGE":
+        response = detect_face(image)
+
+    elif task == "EXAM_RECOGNIZE":
+        face_embedding = request_data['face_embedding']
+        response = recognize_face(image, face_embedding)
+
+    print(response)
+
+    return json.dumps({ "response": response })
 
 # main driver function
 if __name__ == '__main__':

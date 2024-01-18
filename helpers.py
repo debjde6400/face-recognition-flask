@@ -3,7 +3,7 @@ import numpy as np
 import mediapipe as mp
 from PIL import Image
 import json
-from keras_facenet import FaceNet
+import tensorflow as tf
 
 def convert_to_cv2_img(base64img):
   b64ImgPrefix = "data:image/png;base64,"
@@ -57,8 +57,9 @@ def detect_unauthorized_objects(base64ImgStr):
    else:
       violations_dict['person_count'] = 0
 
-   violations_response = json.dumps(violations_dict)
-   return violations_response
+   print("tui tui: ", violations_dict)
+
+   return violations_dict
 
 def get_face_orientation(input):
    mp_face_mesh = mp.solutions.face_mesh
@@ -133,13 +134,25 @@ def get_face_orientation(input):
          return { 'x': x, 'y': y }
 
 def get_face_embeddings(face):
-   facenet_embedder = FaceNet()
-   face = cv2.resize(face, (160, 160))
-   face = face.astype("float32")
+   model = tf.keras.applications.ResNet50(weights='imagenet')
+
+   face = cv2.resize(face, (224, 224))
+   face = face.astype("float32") / 255.0
    face = np.expand_dims(face, axis=0)
 
-   facenet_embeddings = facenet_embedder.embeddings(face)
+   facenet_embeddings = model.predict(tf.keras.applications.imagenet_utils.preprocess_input(face))
    return facenet_embeddings[0].tolist()
+
+def get_euclidean_distance(vectorA, vectorB):
+   l2_normal_A = vectorA / np.sqrt(np.sum(np.multiply(vectorA, vectorA)))
+   l2_normal_B = vectorB / np.sqrt(np.sum(np.multiply(vectorB, vectorB)))
+   vector_diff = l2_normal_A - l2_normal_B
+   euclidean_sqdist = np.sum(
+      np.multiply(vector_diff, vector_diff)
+   )
+
+   euclidean_distance = np.sqrt(euclidean_sqdist)
+   return euclidean_distance
 
 def detect_face(base64ImgStr):
    base64img = convert_to_cv2_img(base64ImgStr)
@@ -172,7 +185,69 @@ def detect_face(base64ImgStr):
          (startX, startY, endX, endY) = box.astype("int")
          face = base64img[startY:endY, startX:endX]
 
-         face_detection_resdict['face_direction'] = get_face_orientation(base64img)
-         face_detection_resdict['face_embedding'] = get_face_embeddings(face)
+         face_direction = get_face_orientation(base64img)
+         print("fc : ", abs(face_direction["x"]) >= 5 and abs(face_direction["x"]) < 20 and abs(face_direction["y"]) < 10)
+
+         if abs(face_direction["x"]) >= 5 and abs(face_direction["x"]) < 20 and abs(face_direction["y"]) < 10:
+            face_detection_resdict['face_direction'] = "straight"
+            face_detection_resdict['face_embedding'] = get_face_embeddings(face)
+         else:
+            face_detection_resdict['face_direction'] = "tilted"
+            face_detection_resdict['face_embedding'] = None
 
    return face_detection_resdict
+
+def recognize_face(base64ImgStr, face_embedding):
+   unauth_object_violation = detect_unauthorized_objects(base64ImgStr)
+   if len(unauth_object_violation["unauthorized_objects"]) > 0 or unauth_object_violation["person_count"] != 1:
+      return unauth_object_violation
+
+   base64img = convert_to_cv2_img(base64ImgStr)
+   net = cv2.dnn.readNetFromCaffe(
+    "./models/deploy.prototxt", "./models/res10_300x300_ssd_iter_140000_fp16.caffemodel"
+   )
+
+   h, w = base64img.shape[:2]
+   blob = cv2.dnn.blobFromImage(
+      cv2.resize(base64img, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0)
+   )
+   net.setInput(blob)
+   preview_image_detections = net.forward()
+
+   prominent_faces = preview_image_detections[:, :, np.where(preview_image_detections[0, 0, :, 2] > 0.8), :]
+
+   if prominent_faces.shape[3] > 1:
+      unauth_object_violation["person_count"] = prominent_faces.shape[3]
+      return unauth_object_violation
+
+   elif prominent_faces.shape[3] == 1:
+      prominent_faces = prominent_faces.ravel()
+      print("prominent faces : ", prominent_faces)
+      confidence = prominent_faces[2]
+
+      if confidence >= 0.8:
+         face_recognition_response = unauth_object_violation
+         box = prominent_faces[3:7] * np.array([w, h, w, h])
+         (startX, startY, endX, endY) = box.astype("int")
+         face = base64img[startY:endY, startX:endX]
+
+         face_direction = get_face_orientation(base64img)
+         print("fc : ", face_direction)
+
+         if face_direction and abs(face_direction["x"]) < 25 and abs(face_direction["y"]) < 25:
+            face_recognition_response['face_direction'] = 'straight'
+
+            preview_window_embeddings = np.array(get_face_embeddings(face))
+            ref_image_embeddings = np.array([ float(x) for x in face_embedding.split(',') ])
+
+            face_recognition_response['euclidean_distance'] = get_euclidean_distance(
+               preview_window_embeddings, ref_image_embeddings
+            )
+
+         else:
+            face_recognition_response['face_direction'] = 'tilted'
+
+         return face_recognition_response
+
+   unauth_object_violation["person_count"] = 0
+   return unauth_object_violation
